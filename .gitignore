@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.cache/
+.next/
+.vite/
+coverage/
+*.log
+.env
+.env.local
+.DS_Store
+*.mp4
+frame_*.jpg
