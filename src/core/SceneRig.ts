@@ -25,10 +25,10 @@ export class SceneRig {
   }
 
   dragBy(deltaX: number, deltaY: number, parallaxAmount: number): void {
-    const dragScale = 0.0066 + parallaxAmount * 0.012;
+    const dragScale = 0.0074 + parallaxAmount * 0.014;
     this.targetRotation.y += deltaX * dragScale;
-    this.targetRotation.x += deltaY * dragScale * 0.92;
-    this.targetRotation.x = Math.max(-1.38, Math.min(1.38, this.targetRotation.x));
+    this.targetRotation.x += deltaY * dragScale * 0.94;
+    this.targetRotation.x = Math.max(-1.52, Math.min(1.52, this.targetRotation.x));
   }
 
   update(delta: number, parallaxAmount: number): void {

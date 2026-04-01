@@ -11,6 +11,15 @@ import { ControlPanel } from '../ui/ControlPanel';
 import { clamp } from '../utils/math';
 
 export class SlowMoFocusApp {
+  private static readonly DEBUG_LABELS = [
+    'Live view',
+    'Debug 1: Subject matte',
+    'Debug 2: Silhouette distance',
+    'Debug 3: Shell eligibility',
+    'Debug 4: Particle states',
+    'Debug 5: Force / velocity',
+  ] as const;
+
   private readonly tuning: ParticleTuning = { ...DEFAULT_TUNING };
   private shell!: AppShell;
   private rendererManager!: RendererManager;
@@ -23,6 +32,8 @@ export class SlowMoFocusApp {
   private animationFrameId = 0;
   private lastFrameTime = 0;
   private isRebuilding = false;
+  private debugMode = 0;
+  private particleMetaBase = '';
   private dragPointerId: number | null = null;
   private lastDragX = 0;
   private lastDragY = 0;
@@ -85,7 +96,7 @@ export class SlowMoFocusApp {
     const deltaY = event.clientY - this.lastDragY;
     this.lastDragX = event.clientX;
     this.lastDragY = event.clientY;
-    this.sceneRig.dragBy(deltaX, deltaY, clamp(this.tuning.parallaxAmount, 0.04, 0.24));
+    this.sceneRig.dragBy(deltaX, deltaY, clamp(this.tuning.parallaxAmount, 0.08, 0.42));
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
@@ -104,6 +115,16 @@ export class SlowMoFocusApp {
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.code === 'KeyT') {
       this.controlPanel.toggle();
+      return;
+    }
+
+    if (event.code === 'Digit0') {
+      this.setDebugMode(0);
+      return;
+    }
+
+    if (/^Digit[1-5]$/.test(event.code)) {
+      this.setDebugMode(Number.parseInt(event.code.slice(-1), 10));
     }
   };
 
@@ -135,6 +156,18 @@ export class SlowMoFocusApp {
     this.particleField.updateTuning(this.tuning);
   }
 
+  private setDebugMode(mode: number): void {
+    this.debugMode = clamp(mode, 0, 5);
+    this.particleField.setDebugMode(this.debugMode);
+    this.updateParticleMeta();
+  }
+
+  private updateParticleMeta(): void {
+    const label = SlowMoFocusApp.DEBUG_LABELS[this.debugMode];
+    const decorated = this.particleMetaBase ? `${this.particleMetaBase} · ${label}` : label;
+    this.shell.setParticleMeta(decorated);
+  }
+
   private async rebuildFromCurrentSource(reason: string): Promise<void> {
     if (!this.currentSourceCanvas || this.isRebuilding) {
       return;
@@ -157,12 +190,14 @@ export class SlowMoFocusApp {
       this.processedImage = nextProcessed;
       this.simulation = nextSimulation;
       this.particleField.rebuild(nextProcessed);
+      this.particleField.setDebugMode(this.debugMode);
       this.particleField.updateViewport(this.shell.canvasHost.clientWidth, this.shell.canvasHost.clientHeight);
-      this.particleField.setSimulationTexture(nextSimulation.positionTexture);
+      this.particleField.setSimulationTextures(nextSimulation.positionTexture, nextSimulation.velocityTexture);
       this.applyTuning();
 
       this.shell.setStatus(reason, 'The image is now rebuilt as a dense living particle surface with a stable core and unstable contour.');
-      this.shell.setParticleMeta(`${count.toLocaleString()} particles · ${resolution} x ${resolution} simulation texture`);
+      this.particleMetaBase = `${count.toLocaleString()} particles · ${resolution} x ${resolution} simulation texture`;
+      this.updateParticleMeta();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown preprocessing failure.';
       this.shell.setStatus('Rebuild failed', message);
@@ -181,7 +216,7 @@ export class SlowMoFocusApp {
 
     if (this.simulation) {
       this.simulation.update(delta, elapsedTime, this.tuning);
-      this.particleField.setSimulationTexture(this.simulation.positionTexture);
+      this.particleField.setSimulationTextures(this.simulation.positionTexture, this.simulation.velocityTexture);
     }
 
     this.rendererManager.renderer.render(this.sceneRig.scene, this.sceneRig.camera);

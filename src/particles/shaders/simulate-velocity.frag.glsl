@@ -6,6 +6,7 @@ uniform sampler2D uVelocityTexture;
 uniform sampler2D uAnchorTexture;
 uniform sampler2D uBoundaryTexture;
 uniform sampler2D uMetaTexture;
+uniform vec2 uDomainScale;
 uniform float uDelta;
 uniform float uTime;
 uniform float uAttractionStrength;
@@ -21,38 +22,57 @@ in vec2 vUv;
 
 out vec4 outColor;
 
-const float TAU = 6.28318530718;
-
-float angularDistance(float a, float b) {
-  float d = abs(a - b);
-  return min(d, TAU - d);
+float saturate(float value) {
+  return clamp(value, 0.0, 1.0);
 }
 
-float poleWeight(float angle, float center, float width) {
-  float d = angularDistance(angle, center);
-  return exp(-(d * d) / max(0.0001, width * width));
+void accumulatePole(
+  vec2 anchorPos,
+  vec2 center,
+  float radius,
+  float polarity,
+  vec2 boundaryNormal,
+  vec2 tangentDir,
+  inout float normalDrive,
+  inout float tangentDrive,
+  inout float bulgeDrive,
+  inout float voidDrive,
+  inout vec2 fieldVector
+) {
+  vec2 delta = center - anchorPos;
+  float dist = length(delta) + 1e-5;
+  vec2 dir = delta / dist;
+  float influence = exp(-dot(delta, delta) / max(0.0001, radius * radius));
+  float normalAlignment = dot(dir, boundaryNormal);
+  float tangentAlignment = dot(dir, tangentDir);
+
+  normalDrive += influence * polarity * normalAlignment;
+  tangentDrive += influence * polarity * tangentAlignment;
+  bulgeDrive += influence * max(0.0, polarity * normalAlignment);
+  voidDrive += influence * max(0.0, -polarity * normalAlignment);
+  fieldVector += dir * influence * polarity;
 }
 
 vec3 curlLikeField(vec3 p, float t) {
   vec3 warped = p;
   warped += vec3(
-    sin(p.z * 0.78 + t * 0.11),
-    cos(p.x * 0.63 - t * 0.09),
-    sin(p.y * 0.58 + t * 0.13)
-  ) * 0.38;
+    sin(p.z * 0.92 + t * 0.14),
+    cos(p.x * 0.71 - t * 0.11),
+    sin(p.y * 0.64 + t * 0.16)
+  ) * 0.34;
 
-  float dFz_dy = -1.58 * sin(warped.x * 1.42 + t * 0.29) * sin(warped.y * 1.58 - t * 0.37);
-  float dFy_dz = 1.46 * cos(warped.z * 1.46 - t * 0.33) * cos(warped.x * 1.18 + t * 0.21);
-  float dFx_dz = -1.34 * sin(warped.y * 1.68 + t * 0.41) * sin(warped.z * 1.34 - t * 0.27);
-  float dFz_dx = 1.42 * cos(warped.x * 1.42 + t * 0.29) * cos(warped.y * 1.58 - t * 0.37);
-  float dFy_dx = -1.18 * sin(warped.z * 1.46 - t * 0.33) * sin(warped.x * 1.18 + t * 0.21);
-  float dFx_dy = 1.68 * cos(warped.y * 1.68 + t * 0.41) * cos(warped.z * 1.34 - t * 0.27);
+  float dFz_dy = -1.32 * sin(warped.x * 1.18 + t * 0.27) * sin(warped.y * 1.32 - t * 0.21);
+  float dFy_dz = 1.26 * cos(warped.z * 1.26 - t * 0.29) * cos(warped.x * 1.06 + t * 0.18);
+  float dFx_dz = -1.18 * sin(warped.y * 1.44 + t * 0.33) * sin(warped.z * 1.18 - t * 0.24);
+  float dFz_dx = 1.18 * cos(warped.x * 1.18 + t * 0.27) * cos(warped.y * 1.32 - t * 0.21);
+  float dFy_dx = -1.06 * sin(warped.z * 1.26 - t * 0.29) * sin(warped.x * 1.06 + t * 0.18);
+  float dFx_dy = 1.44 * cos(warped.y * 1.44 + t * 0.33) * cos(warped.z * 1.18 - t * 0.24);
 
   return normalize(vec3(
     dFz_dy - dFy_dz,
     dFx_dz - dFz_dx,
     dFy_dx - dFx_dy
-  ) + 1e-5) * 1.6;
+  ) + 1e-5) * 1.45;
 }
 
 void main() {
@@ -63,143 +83,131 @@ void main() {
   vec4 meta = texture(uMetaTexture, vUv);
 
   vec3 position = positionSample.xyz;
-  float detachState = positionSample.w;
+  float state = positionSample.w;
   vec3 velocity = velocitySample.xyz;
   vec3 anchor = anchorSample.xyz;
   float coreWeight = anchorSample.w;
   vec2 boundaryNormal = boundarySample.xy;
   float shellDepth = boundarySample.z;
   float interior = boundarySample.w;
-  float rawEdge = meta.x;
   float seed = meta.y;
   float depthBias = meta.z;
-  float shellCoord = meta.w;
 
   float t = uTime * uMotionSpeed;
   if (dot(boundaryNormal, boundaryNormal) < 1e-6) {
-    float radialLength = length(anchor.xy);
-    boundaryNormal = radialLength > 1e-5 ? anchor.xy / radialLength : vec2(0.0, 1.0);
+    boundaryNormal = vec2(0.0, 1.0);
   } else {
     boundaryNormal = normalize(boundaryNormal);
   }
 
   vec2 tangentDir = vec2(-boundaryNormal.y, boundaryNormal.x);
-  float angle = atan(boundaryNormal.y, boundaryNormal.x);
+  float shellInner = 0.08 + uEdgeThreshold * 0.18;
+  float shellOuter = min(0.72, shellInner + 0.16 + uEdgeBoost * 0.08);
+  float shellEligible = (1.0 - smoothstep(shellInner, shellOuter, interior)) * smoothstep(0.16, 0.7, shellDepth);
+  float transitionBand = smoothstep(shellInner * 0.8 + 0.12, shellOuter + 0.08, interior) * (1.0 - smoothstep(0.52, 0.84, interior));
+  float coreBand = smoothstep(0.34, 0.84, interior) * mix(0.7, 1.0, coreWeight);
 
-  float poleAngleA = t * 0.22 + 0.3;
-  float poleAngleB = -t * 0.18 + 1.95;
-  float poleAngleC = t * 0.27 + 3.32;
-  float poleAngleD = -t * 0.24 + 5.1;
-  float poleA = poleWeight(angle, poleAngleA, 0.44);
-  float poleB = poleWeight(angle, poleAngleB, 0.4);
-  float poleC = poleWeight(angle, poleAngleC, 0.48);
-  float poleD = poleWeight(angle, poleAngleD, 0.42);
-  vec2 poleVector =
-    vec2(cos(poleAngleA), sin(poleAngleA)) * poleA +
-    vec2(cos(poleAngleC), sin(poleAngleC)) * poleC * 0.82 -
-    vec2(cos(poleAngleB), sin(poleAngleB)) * poleB -
-    vec2(cos(poleAngleD), sin(poleAngleD)) * poleD * 0.78;
-  float magnetRadial = dot(poleVector, boundaryNormal);
-  float magnetTangential = dot(poleVector, tangentDir);
-  float shellPulse = sin(t * 0.47 + angle * 4.6 + seed * 5.4);
-  float shellCurl = cos(t * 0.35 - angle * 3.5 + seed * 3.8);
-  float contourOffset = (magnetRadial * 0.2 + magnetTangential * 0.08 + shellPulse * 0.06) * shellDepth;
-  float dynamicShell = shellCoord + contourOffset;
+  vec2 extent = uDomainScale * 0.5;
+  float majorScale = max(uDomainScale.x, uDomainScale.y);
+  vec2 poleA = extent * vec2(-0.82 + 0.16 * sin(t * 0.21 + 0.3), 0.58 + 0.16 * cos(t * 0.17 + 1.2));
+  vec2 poleB = extent * vec2(0.88 + 0.1 * cos(t * 0.19 + 2.1), 0.08 + 0.22 * sin(t * 0.24 + 0.7));
+  vec2 poleC = extent * vec2(-0.28 + 0.18 * sin(t * 0.23 + 1.4), -0.86 + 0.12 * cos(t * 0.15 + 2.4));
+  vec2 poleD = extent * vec2(0.18 + 0.22 * cos(t * 0.27 + 3.1), -0.34 + 0.18 * sin(t * 0.18 + 4.0));
 
-  float denseBand = 1.0 - smoothstep(0.62, 0.78, dynamicShell);
-  float moireBand = smoothstep(0.58, 0.72, dynamicShell) * (1.0 - smoothstep(0.82, 0.94, dynamicShell));
-  float shellBand = smoothstep(0.74, 0.98, dynamicShell) * smoothstep(0.22, 0.95, shellDepth);
-  float dustBand = smoothstep(0.92, 1.14, dynamicShell) * shellDepth;
+  float normalDrive = 0.0;
+  float tangentDrive = 0.0;
+  float bulgeDrive = 0.0;
+  float voidDrive = 0.0;
+  vec2 fieldVector = vec2(0.0);
 
-  float tissuePhase = dot(anchor.xy, vec2(6.5, -3.9));
-  float tissuePhaseAlt = dot(anchor.xy, vec2(-4.3, 5.4));
-  float coreWaveA = sin(t * 0.24 + tissuePhase + seed * 4.0);
-  float coreWaveB = cos(t * 0.19 + tissuePhaseAlt - seed * 2.7);
-  float coreWaveC = sin(t * 0.28 + dot(anchor.xy, vec2(5.7, -4.6)));
-  vec2 coreWarp = vec2(coreWaveA + coreWaveC * 0.34, coreWaveB - coreWaveC * 0.3);
-  vec2 coreWarpDir = normalize(coreWarp + 1e-5);
-  vec2 moireAxisA = normalize(vec2(cos(seed * 3.0 + t * 0.05), sin(seed * 2.4 - t * 0.07)));
-  vec2 moireAxisB = normalize(vec2(-sin(seed * 2.8 + t * 0.06), cos(seed * 1.9 - t * 0.05)));
-  float moire = sin(dot(anchor.xy, moireAxisA * 23.0) + t * 0.58 + seed * 7.0);
-  float moire2 = cos(dot(anchor.xy, moireAxisB * 19.0) - t * 0.42 + seed * 5.0);
-  vec2 moireDir = normalize(vec2(moire, moire2) + 1e-5);
-  float drumWave = sin(dot(anchor.xy, vec2(10.5, -8.4)) + t * 0.44) * cos(dot(anchor.xy, vec2(7.8, 9.6)) - t * 0.31);
-  float depthWave = sin(dot(anchor.xy, vec2(12.8, -10.2)) + t * 0.39 + seed * 6.0);
+  accumulatePole(anchor.xy, poleA, majorScale * 0.22, 1.0, boundaryNormal, tangentDir, normalDrive, tangentDrive, bulgeDrive, voidDrive, fieldVector);
+  accumulatePole(anchor.xy, poleB, majorScale * 0.19, -1.0, boundaryNormal, tangentDir, normalDrive, tangentDrive, bulgeDrive, voidDrive, fieldVector);
+  accumulatePole(anchor.xy, poleC, majorScale * 0.18, 1.0, boundaryNormal, tangentDir, normalDrive, tangentDrive, bulgeDrive, voidDrive, fieldVector);
+  accumulatePole(anchor.xy, poleD, majorScale * 0.17, -1.0, boundaryNormal, tangentDir, normalDrive, tangentDrive, bulgeDrive, voidDrive, fieldVector);
 
+  float localWeave = sin(anchor.x * 9.4 + t * 0.34 + seed * 11.0) * cos(anchor.y * 11.2 - t * 0.29 + seed * 7.1);
+  float localRipple = sin(dot(anchor.xy, vec2(7.6, -5.4)) + t * 0.41 + seed * 5.3);
+  float localCurl = sin(dot(anchor.xy, vec2(-8.8, 6.3)) - t * 0.37 + seed * 3.1) * cos(dot(anchor.xy, vec2(6.9, 9.1)) + t * 0.28 + seed * 2.4);
+  float shellMacro = abs(normalDrive) * 1.18 + abs(tangentDrive) * 0.84 + bulgeDrive * 0.76 + voidDrive * 0.96 + abs(localWeave) * 0.18;
+  float shellActivity = shellEligible * saturate(shellMacro * (0.6 + uErosionStrength * 0.28));
+
+  float shellFloor = shellEligible * (0.18 + smoothstep(0.12, 0.4, shellActivity) * 0.16);
+  float detachedIntent = shellEligible * smoothstep(0.52, 1.08, shellMacro + voidDrive * 0.38 + bulgeDrive * 0.2 + abs(localRipple) * 0.14);
+  float stateTarget = clamp(shellFloor + detachedIntent * 0.76, 0.0, 1.0);
+  float riseRate = 0.9 + shellMacro * 0.9 + uErosionStrength * 0.36;
+  float fallRate = mix(0.13, 0.035, smoothstep(0.66, 0.92, state));
+  float rate = stateTarget > state ? riseRate : fallRate;
+  float nextState = clamp(state + (stateTarget - state) * saturate(rate * uDelta), 0.0, 1.0);
+
+  float detached = smoothstep(0.7, 0.9, nextState);
+  float shellAttached = shellEligible * (1.0 - detached) * smoothstep(0.14, 0.5, nextState + shellEligible * 0.34);
+
+  vec2 tissueWarp = vec2(
+    sin(dot(anchor.xy, vec2(5.3, -3.9)) + t * 0.22 + seed * 5.6),
+    cos(dot(anchor.xy, vec2(-4.2, 6.1)) - t * 0.19 + seed * 4.8)
+  );
   vec3 attachedTarget = anchor;
-  attachedTarget.xy += coreWarpDir * length(coreWarp) * denseBand * 0.0018;
-  attachedTarget.xy += moireDir * moire * moireBand * 0.0028;
-  attachedTarget.xy += tangentDir * moire2 * moireBand * 0.0021;
-  attachedTarget.xy += boundaryNormal * magnetRadial * moireBand * 0.0048;
-  attachedTarget.xy += tangentDir * magnetTangential * moireBand * 0.0039;
+  attachedTarget.xy += tissueWarp * (coreBand * 0.0016 + transitionBand * 0.0023);
+  attachedTarget.xy += tangentDir * localCurl * transitionBand * 0.0018;
   attachedTarget.z += uDepthThickness * (
-    denseBand * (coreWaveA * 0.03 + coreWaveB * 0.026 + coreWaveC * 0.02) +
-    moireBand * (moire * 0.08 + moire2 * 0.06 + drumWave * 0.05) +
-    shellBand * (shellPulse * 0.06 + shellCurl * 0.05)
+    coreBand * (localWeave * 0.04 + localRipple * 0.03) +
+    transitionBand * (localCurl * 0.08 + localRipple * 0.06)
   );
-  attachedTarget.z += depthBias * uDepthThickness * 0.1;
+  attachedTarget.z += depthBias * uDepthThickness * 0.08;
 
-  float edgeBand = smoothstep(max(0.0, uEdgeThreshold - 0.08), min(1.0, uEdgeThreshold + 0.18), rawEdge);
-  float bulgeMask = smoothstep(0.34, 0.92, max(poleA, poleC) + max(0.0, magnetRadial) * 0.28 + shellPulse * 0.08) * shellBand;
-  float voidMask = smoothstep(0.3, 0.88, max(poleB, poleD) + max(0.0, -magnetRadial) * 0.34 + abs(magnetTangential) * 0.18 + shellCurl * 0.08) * shellBand;
-  float fieldStrength = abs(magnetRadial) * 0.82 + abs(magnetTangential) * 0.56 + abs(shellPulse) * 0.42 + abs(shellCurl) * 0.32 + edgeBand * 0.22;
-  float detachNoise = sin(t * 0.49 + seed * 21.0 + angle * 4.4) * 0.5 + 0.5;
-  float detachDrive = shellBand * smoothstep(0.18, 0.72, fieldStrength + voidMask * 0.24) * smoothstep(0.24, 0.96, detachNoise);
-  float detachDecay = mix(0.08, 0.18, 1.0 - shellBand);
-  float nextDetach = clamp(detachState + detachDrive * uDelta * (1.6 + uErosionStrength * 0.9) - detachDecay * uDelta, 0.0, 1.0);
-  float shellState = max(shellBand, smoothstep(0.06, 0.34, nextDetach));
-  float detached = smoothstep(0.48, 0.76, nextDetach);
+  float contourNormalDisplacement =
+    shellEligible *
+    (normalDrive * 0.082 + bulgeDrive * 0.048 - voidDrive * 0.072 + localRipple * 0.016) *
+    (0.58 + uEdgeBoost * 0.34);
+  float contourShear =
+    shellEligible *
+    (tangentDrive * 0.041 + localCurl * 0.024 + localWeave * 0.012) *
+    (0.54 + uFlowStrength * 0.48);
 
-  vec2 collectiveShellVec = poleVector + vec2(shellPulse, shellCurl) * 0.38;
-  vec2 shellDir = normalize(collectiveShellVec + boundaryNormal * 0.2 + 1e-5);
-  vec3 detachedFlow = curlLikeField(anchor * 2.15 + position * 0.46 + vec3(seed * 4.3, seed * 3.2, nextDetach * 2.5), t);
-  vec3 detachedForce = vec3(0.0);
-  detachedForce.xy += boundaryNormal * (0.05 + shellBand * 0.08 + dustBand * 0.04) * (1.0 + max(0.0, magnetRadial) * 1.6);
-  detachedForce.xy += tangentDir * magnetTangential * 0.09;
-  detachedForce.xy += shellDir * (0.05 + shellBand * 0.05);
-  detachedForce.xy += vec2(shellPulse, shellCurl) * 0.028;
-  detachedForce += detachedFlow * (0.12 + uFlowStrength * 0.26);
-  detachedForce.z += uDepthThickness * (
-    shellBand * (magnetRadial * 0.24 + shellPulse * 0.18 + shellCurl * 0.14) +
-    dustBand * (0.16 + depthWave * 0.12 + shellPulse * 0.08)
-  );
-
-  float contourDisplacement =
-    bulgeMask * (0.05 + max(0.0, magnetRadial) * 0.1 + shellPulse * 0.02) -
-    voidMask * (0.045 + max(0.0, -magnetRadial) * 0.08 + abs(magnetTangential) * 0.03);
   vec3 shellTarget = anchor;
-  shellTarget.xy += boundaryNormal * contourDisplacement;
-  shellTarget.xy += tangentDir * (magnetTangential * 0.022 + shellCurl * 0.012);
-  shellTarget.xy += shellDir * (bulgeMask * 0.018 - voidMask * 0.012);
-  shellTarget.xy += vec2(shellPulse, shellCurl) * shellBand * 0.006;
+  shellTarget.xy += boundaryNormal * contourNormalDisplacement;
+  shellTarget.xy += tangentDir * contourShear;
+  shellTarget.xy += fieldVector * (0.018 + bulgeDrive * 0.014 + voidDrive * 0.01) * shellEligible;
   shellTarget.z += uDepthThickness * (
-    contourDisplacement * 1.15 +
-    bulgeMask * (shellPulse * 0.12 + shellCurl * 0.08) -
-    voidMask * (0.08 + abs(shellCurl) * 0.06)
+    shellEligible * (contourNormalDisplacement * 1.7 + contourShear * 0.42 + localCurl * 0.1) +
+    shellAttached * (0.05 + localWeave * 0.07) -
+    voidDrive * 0.1
   );
 
-  vec3 attachedForce = (attachedTarget - position) * uAttractionStrength * mix(2.4, 1.6, moireBand + shellBand * 0.25);
-  vec3 shellForce = (shellTarget - position) * uAttractionStrength * mix(0.62, 0.34, nextDetach) + vec3(boundaryNormal * contourDisplacement, contourDisplacement * 0.5);
-  vec3 weakReturn = (shellTarget - position) * uAttractionStrength * mix(0.26, 0.08, detached);
-  vec3 attachedToShell = mix(attachedForce, shellForce, shellState);
-  vec3 totalForce = mix(attachedToShell, weakReturn + detachedForce, detached);
+  vec3 detachedFlow = curlLikeField(vec3(anchor.xy * 2.1 + position.xy * 0.24, position.z * 6.4 + seed * 2.3), t + seed * 1.7);
+  vec3 detachedForce = vec3(0.0);
+  detachedForce.xy += boundaryNormal * (0.034 + max(0.0, normalDrive) * 0.09 + bulgeDrive * 0.05 - voidDrive * 0.018);
+  detachedForce.xy += tangentDir * (contourShear * 1.45 + localCurl * 0.032);
+  detachedForce.xy += fieldVector * (0.09 + uFlowStrength * 0.1);
+  detachedForce += detachedFlow * (0.06 + uFlowStrength * 0.22);
+  detachedForce.z += uDepthThickness * (0.22 + abs(localCurl) * 0.18 + shellMacro * 0.1 + abs(localWeave) * 0.08);
+
+  vec3 attachedForce = (attachedTarget - position) * uAttractionStrength * mix(2.5, 1.4, transitionBand + shellEligible * 0.18);
+  vec3 shellForce =
+    (shellTarget - position) * uAttractionStrength * mix(0.76, 0.28, nextState) +
+    vec3(boundaryNormal * contourNormalDisplacement * 0.56, contourNormalDisplacement * 0.42);
+  vec3 detachedReturn = (shellTarget - position) * uAttractionStrength * mix(0.16, 0.05, detached);
+
+  vec3 attachedToShell = mix(attachedForce, shellForce, shellAttached);
+  vec3 totalForce = mix(attachedToShell, detachedReturn + detachedForce, detached);
 
   vec3 breathingForce = vec3(
-    sin(t * 0.22 + tissuePhase * 0.34),
-    cos(t * 0.19 + tissuePhaseAlt * 0.31),
-    sin(t * 0.29 + depthWave * 1.3 + seed * 6.8)
-  ) * (denseBand * 0.0014 + moireBand * 0.0032 + shellBand * 0.0054 + detached * 0.0022);
+    sin(t * 0.2 + dot(anchor.xy, vec2(4.2, -2.8)) + seed * 6.1),
+    cos(t * 0.23 + dot(anchor.xy, vec2(-3.2, 4.4)) - seed * 4.9),
+    sin(t * 0.27 + dot(anchor.xy, vec2(5.0, 3.4)) + seed * 7.2)
+  ) * (coreBand * 0.0014 + transitionBand * 0.0022 + shellAttached * 0.0036 + detached * 0.0022);
 
   velocity += (totalForce + breathingForce) * uDelta;
 
-  float damping = exp(-uDamping * mix(3.2, 0.74, detached) * mix(1.06, 0.94, dustBand) * uDelta * 60.0);
+  float mobility = shellAttached * 0.56 + detached + transitionBand * 0.22;
+  float damping = exp(-uDamping * mix(4.3, 0.82, mobility) * uDelta * 60.0);
   velocity *= damping;
 
-  float speedLimit = mix(0.022, 0.094, detached + dustBand * 0.12);
+  float speedLimit = mix(0.02, 0.11, detached + shellAttached * 0.42);
   float speed = length(velocity);
   if (speed > speedLimit) {
     velocity = normalize(velocity) * speedLimit;
   }
 
-  outColor = vec4(velocity, nextDetach);
+  outColor = vec4(velocity, nextState);
 }

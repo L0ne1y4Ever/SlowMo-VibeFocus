@@ -222,6 +222,168 @@ function blurField(source: Float32Array, width: number, height: number, radius: 
   return target;
 }
 
+function deriveForegroundMask(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  borderStats: BorderStats,
+  luminance: Float32Array,
+): Float32Array {
+  const total = width * height;
+  const affinity = new Float32Array(total);
+  const backgroundMask = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let head = 0;
+  let tail = 0;
+
+  const seedThreshold = 0.082 + borderStats.variance * 1.5;
+  const growThreshold = seedThreshold * 1.55 + 0.036;
+  const neighborThreshold = 0.12 + borderStats.variance * 0.7;
+
+  const enqueue = (index: number): void => {
+    if (backgroundMask[index]) {
+      return;
+    }
+
+    backgroundMask[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+  };
+
+  const isBorderPixel = (x: number, y: number): boolean => x === 0 || y === 0 || x === width - 1 || y === height - 1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const offset = index * 4;
+      const r = data[offset] / 255;
+      const g = data[offset + 1] / 255;
+      const b = data[offset + 2] / 255;
+      const luma = luminance[index];
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const saturation = maxChannel - minChannel;
+      const dr = r - borderStats.r;
+      const dg = g - borderStats.g;
+      const db = b - borderStats.b;
+      const colorDistance = Math.sqrt(dr * dr * 0.36 + dg * dg * 0.42 + db * db * 0.22);
+      const borderContrast = Math.abs(luma - borderStats.luma);
+      affinity[index] = colorDistance * 1.18 + borderContrast * 0.68 + saturation * 0.18;
+
+      if (isBorderPixel(x, y) && affinity[index] <= seedThreshold) {
+        enqueue(index);
+      }
+    }
+  }
+
+  while (head < tail) {
+    const index = queue[head];
+    head += 1;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const offset = index * 4;
+    const r = data[offset] / 255;
+    const g = data[offset + 1] / 255;
+    const b = data[offset + 2] / 255;
+
+    const tryNeighbor = (nx: number, ny: number): void => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+        return;
+      }
+
+      const neighborIndex = ny * width + nx;
+      if (backgroundMask[neighborIndex] || affinity[neighborIndex] > growThreshold) {
+        return;
+      }
+
+      const neighborOffset = neighborIndex * 4;
+      const nr = data[neighborOffset] / 255;
+      const ng = data[neighborOffset + 1] / 255;
+      const nb = data[neighborOffset + 2] / 255;
+      const localDifference = Math.sqrt((nr - r) * (nr - r) * 0.34 + (ng - g) * (ng - g) * 0.42 + (nb - b) * (nb - b) * 0.24);
+
+      if (localDifference > neighborThreshold && affinity[neighborIndex] > seedThreshold * 0.92) {
+        return;
+      }
+
+      enqueue(neighborIndex);
+    };
+
+    tryNeighbor(x - 1, y);
+    tryNeighbor(x + 1, y);
+    tryNeighbor(x, y - 1);
+    tryNeighbor(x, y + 1);
+  }
+
+  const rawCoverage = new Float32Array(total);
+  for (let i = 0; i < total; i += 1) {
+    if (backgroundMask[i]) {
+      rawCoverage[i] = 0;
+      continue;
+    }
+
+    const subjectConfidence = smoothstep(seedThreshold * 0.82, growThreshold * 1.38, affinity[i]);
+    rawCoverage[i] = lerp(0.7, 1, subjectConfidence);
+  }
+
+  return rawCoverage;
+}
+
+function computeDistanceField(
+  mask: Float32Array,
+  width: number,
+  height: number,
+  threshold: number,
+  invert: boolean,
+  treatBorderAsZero: boolean,
+): Float32Array {
+  const total = width * height;
+  const distances = new Float32Array(total);
+  const largeValue = 1e6;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const present = invert ? mask[index] <= threshold : mask[index] > threshold;
+      const border = x === 0 || y === 0 || x === width - 1 || y === height - 1;
+      distances[index] = present && !(treatBorderAsZero && border) ? largeValue : 0;
+    }
+  }
+
+  const sqrt2 = Math.SQRT2;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      let value = distances[index];
+
+      if (value > 0) {
+        if (x > 0) value = Math.min(value, distances[index - 1] + 1);
+        if (y > 0) value = Math.min(value, distances[index - width] + 1);
+        if (x > 0 && y > 0) value = Math.min(value, distances[index - width - 1] + sqrt2);
+        if (x < width - 1 && y > 0) value = Math.min(value, distances[index - width + 1] + sqrt2);
+        distances[index] = value;
+      }
+    }
+  }
+
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      let value = distances[index];
+
+      if (value > 0) {
+        if (x < width - 1) value = Math.min(value, distances[index + 1] + 1);
+        if (y < height - 1) value = Math.min(value, distances[index + width] + 1);
+        if (x < width - 1 && y < height - 1) value = Math.min(value, distances[index + width + 1] + sqrt2);
+        if (x > 0 && y < height - 1) value = Math.min(value, distances[index + width - 1] + sqrt2);
+        distances[index] = value;
+      }
+    }
+  }
+
+  return distances;
+}
+
 function findContentBounds(coverage: Float32Array, width: number, height: number, threshold: number): ContentBounds {
   let minX = width - 1;
   let minY = height - 1;
@@ -313,36 +475,18 @@ function analyzePixels(source: CanvasImageSource): PixelAnalysis {
       const r = data[offset] / 255;
       const g = data[offset + 1] / 255;
       const b = data[offset + 2] / 255;
-      const a = data[offset + 3] / 255;
       const luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
-      const maxChannel = Math.max(r, g, b);
-      const minChannel = Math.min(r, g, b);
-      const saturation = maxChannel - minChannel;
 
       luminance[index] = luma;
-
-      if (hasTransparency) {
-        rawCoverage[index] = a;
-        continue;
-      }
-
-      const dr = r - borderStats.r;
-      const dg = g - borderStats.g;
-      const db = b - borderStats.b;
-      const backgroundDistance = Math.sqrt(dr * dr * 0.34 + dg * dg * 0.42 + db * db * 0.24);
-      const borderContrast = Math.abs(luma - borderStats.luma);
-      const nx = ((x + 0.5) / width) * 2 - 1;
-      const ny = ((y + 0.5) / height) * 2 - 1;
-      const centerEnvelope = 1 - smoothstep(0.74, 1.16, Math.sqrt(nx * nx * 0.88 + ny * ny * 1.12));
-      const subjectness =
-        backgroundDistance * (1.16 + borderStats.variance * 3.1) +
-        borderContrast * 0.56 +
-        saturation * 0.22 +
-        luma * 0.08;
-
-      const matte = smoothstep(0.06, 0.24, subjectness);
-      rawCoverage[index] = Math.max(matte, smoothstep(0.56, 0.92, luma) * centerEnvelope * 0.34);
     }
+  }
+
+  if (hasTransparency) {
+    for (let i = 0; i < total; i += 1) {
+      rawCoverage[i] = data[i * 4 + 3] / 255;
+    }
+  } else {
+    rawCoverage.set(deriveForegroundMask(data, width, height, borderStats, luminance));
   }
 
   const blurredCoverage = blurField(rawCoverage, width, height, 2);
@@ -377,46 +521,12 @@ function analyzePixels(source: CanvasImageSource): PixelAnalysis {
     }
   }
 
-  const distances = new Float32Array(total);
-  const largeValue = 1e6;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      const present = coverage[index] > (hasTransparency ? 0.04 : 0.11);
-      const border = x === 0 || y === 0 || x === width - 1 || y === height - 1;
-      distances[index] = present && !border ? largeValue : 0;
-    }
-  }
-
-  const sqrt2 = Math.SQRT2;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      let value = distances[index];
-
-      if (value > 0) {
-        if (x > 0) value = Math.min(value, distances[index - 1] + 1);
-        if (y > 0) value = Math.min(value, distances[index - width] + 1);
-        if (x > 0 && y > 0) value = Math.min(value, distances[index - width - 1] + sqrt2);
-        if (x < width - 1 && y > 0) value = Math.min(value, distances[index - width + 1] + sqrt2);
-        distances[index] = value;
-      }
-    }
-  }
-
-  for (let y = height - 1; y >= 0; y -= 1) {
-    for (let x = width - 1; x >= 0; x -= 1) {
-      const index = y * width + x;
-      let value = distances[index];
-
-      if (value > 0) {
-        if (x < width - 1) value = Math.min(value, distances[index + 1] + 1);
-        if (y < height - 1) value = Math.min(value, distances[index + width] + 1);
-        if (x < width - 1 && y < height - 1) value = Math.min(value, distances[index + width + 1] + sqrt2);
-        if (x > 0 && y < height - 1) value = Math.min(value, distances[index + width - 1] + sqrt2);
-        distances[index] = value;
-      }
-    }
+  const matteThreshold = hasTransparency ? 0.04 : 0.11;
+  const distances = computeDistanceField(coverage, width, height, matteThreshold, false, true);
+  const outsideDistances = computeDistanceField(coverage, width, height, matteThreshold, true, false);
+  const signedDistance = new Float32Array(total);
+  for (let i = 0; i < total; i += 1) {
+    signedDistance[i] = coverage[i] > matteThreshold ? distances[i] : -outsideDistances[i];
   }
 
   const interiorNormalizer = Math.max(10, Math.min(contentBounds.maxX - contentBounds.minX + 1, contentBounds.maxY - contentBounds.minY + 1) * 0.18);
@@ -428,7 +538,6 @@ function analyzePixels(source: CanvasImageSource): PixelAnalysis {
       const index = y * width + x;
       const dist = distances[index];
       const inside = dist > 0 ? clamp(dist / interiorNormalizer, 0, 1) : 0;
-      const distanceCore = smoothstep(0.05, 0.92, inside);
       const nx = (x + 0.5 - contentBounds.centroidX) / Math.max(1, cropWidth * 0.56);
       const ny = (y + 0.5 - contentBounds.centroidY) / Math.max(1, cropHeight * 0.56);
       const maskedCoverage = coverage[index];
@@ -441,7 +550,7 @@ function analyzePixels(source: CanvasImageSource): PixelAnalysis {
       const sampleDistance = (sx: number, sy: number): number => {
         const cx = clamp(sx, 0, width - 1);
         const cy = clamp(sy, 0, height - 1);
-        return distances[cy * width + cx];
+        return signedDistance[cy * width + cx];
       };
       const outwardX = sampleDistance(x - 1, y) - sampleDistance(x + 1, y);
       const outwardY = sampleDistance(x, y - 1) - sampleDistance(x, y + 1);
@@ -579,14 +688,14 @@ export function preprocessImage(source: CanvasImageSource, resolution: number): 
     const shellCoord = analysis.shellCoord[pixelIndex];
     const seed = hash11(i * 1.173 + edge * 11.4 + core * 9.1 + interior * 4.6);
     const depthBias =
-      (hash11(i * 2.931 + 1.37) - 0.5) * (0.12 + shellCoord * 0.22 + edge * 0.16) +
-      (interior - 0.5) * 0.04;
-    const spawnSpread = 0.00012 + edge * 0.00115 + (1 - core) * 0.00016;
+      (hash11(i * 2.931 + 1.37) - 0.5) * (0.08 + shellDepth * 0.42 + (1 - core) * 0.08) +
+      (0.22 - interior) * 0.026;
+    const spawnSpread = 0.0001 + shellDepth * 0.00125 + (1 - core) * 0.00022;
 
     const base = i * 4;
     anchorData[base] = worldX;
     anchorData[base + 1] = worldY;
-    anchorData[base + 2] = (interior - 0.5) * 0.014 + (hash11(i * 8.31 + 2.4) - 0.5) * 0.01;
+    anchorData[base + 2] = (0.18 - interior) * 0.012 + (hash11(i * 8.31 + 2.4) - 0.5) * (0.006 + shellDepth * 0.032);
     anchorData[base + 3] = core;
 
     boundaryData[base] = boundaryNormalX;
@@ -596,7 +705,7 @@ export function preprocessImage(source: CanvasImageSource, resolution: number): 
 
     positionData[base] = worldX + (hash11(i * 6.21) - 0.5) * spawnSpread;
     positionData[base + 1] = worldY + (hash11(i * 6.21 + 1.9) - 0.5) * spawnSpread;
-    positionData[base + 2] = anchorData[base + 2] + depthBias * 0.018;
+    positionData[base + 2] = anchorData[base + 2] + depthBias * 0.024;
     positionData[base + 3] = 0;
 
     velocityData[base] = 0;

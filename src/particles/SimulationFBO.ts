@@ -8,6 +8,7 @@ import {
   RGBAFormat,
   RawShaderMaterial,
   Scene,
+  Vector2,
   WebGLRenderTarget,
   WebGLRenderer,
 } from 'three';
@@ -66,6 +67,7 @@ export class SimulationFBO {
         uAnchorTexture: { value: null },
         uBoundaryTexture: { value: null },
         uMetaTexture: { value: null },
+        uDomainScale: { value: new Vector2(1, 1) },
         uDelta: { value: 0.016 },
         uTime: { value: 0 },
         uAttractionStrength: { value: 1 },
@@ -118,6 +120,7 @@ export class SimulationFBO {
     this.velocityMaterial.uniforms.uAnchorTexture.value = data.anchorTexture;
     this.velocityMaterial.uniforms.uBoundaryTexture.value = data.boundaryTexture;
     this.velocityMaterial.uniforms.uMetaTexture.value = data.metaTexture;
+    this.velocityMaterial.uniforms.uDomainScale.value.set(data.worldWidth, data.worldHeight);
   }
 
   update(delta: number, elapsedTime: number, tuning: ParticleTuning): void {
@@ -150,6 +153,10 @@ export class SimulationFBO {
 
   get positionTexture() {
     return this.positionTargets[this.currentIndex].texture;
+  }
+
+  get velocityTexture() {
+    return this.velocityTargets[this.currentIndex].texture;
   }
 
   dispose(): void {

@@ -80,6 +80,7 @@ function createMaterial(): RawShaderMaterial {
     blendDst: OneMinusSrcAlphaFactor,
     uniforms: {
       uPositionTexture: { value: null as Texture | null },
+      uVelocityTexture: { value: null as Texture | null },
       uAnchorTexture: { value: null as Texture | null },
       uColorTexture: { value: null as Texture | null },
       uMetaTexture: { value: null as Texture | null },
@@ -87,6 +88,7 @@ function createMaterial(): RawShaderMaterial {
       uDensityScale: { value: 1 },
       uBrightness: { value: 1 },
       uAlphaGain: { value: 1 },
+      uDebugMode: { value: 0 },
       uViewport: { value: new Vector2(1, 1) },
     },
   });
@@ -98,6 +100,7 @@ export class ParticleField {
   private material: RawShaderMaterial | null = null;
   private geometry: InstancedBufferGeometry | null = null;
   private particleCount = 0;
+  private debugMode = 0;
 
   rebuild(data: ProcessedParticleImage): void {
     this.disposeRenderable();
@@ -107,6 +110,7 @@ export class ParticleField {
     this.material.uniforms.uAnchorTexture.value = data.anchorTexture;
     this.material.uniforms.uColorTexture.value = data.colorTexture;
     this.material.uniforms.uMetaTexture.value = data.metaTexture;
+    this.material.uniforms.uDebugMode.value = this.debugMode;
 
     this.mesh = new Mesh(this.geometry, this.material);
     this.mesh.frustumCulled = false;
@@ -115,9 +119,10 @@ export class ParticleField {
     this.particleCount = data.particleCount;
   }
 
-  setSimulationTexture(positionTexture: Texture): void {
+  setSimulationTextures(positionTexture: Texture, velocityTexture: Texture): void {
     if (this.material) {
       this.material.uniforms.uPositionTexture.value = positionTexture;
+      this.material.uniforms.uVelocityTexture.value = velocityTexture;
     }
   }
 
@@ -134,6 +139,13 @@ export class ParticleField {
     this.material.uniforms.uDensityScale.value = densityScale(this.particleCount, tuning.densityCompensation);
     this.material.uniforms.uBrightness.value = tuning.brightness;
     this.material.uniforms.uAlphaGain.value = tuning.alphaGain;
+  }
+
+  setDebugMode(mode: number): void {
+    this.debugMode = mode;
+    if (this.material) {
+      this.material.uniforms.uDebugMode.value = mode;
+    }
   }
 
   private disposeRenderable(): void {
