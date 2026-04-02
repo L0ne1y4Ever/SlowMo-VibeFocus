@@ -1,39 +1,34 @@
+import { CanvasTexture, ClampToEdgeWrapping, LinearFilter } from 'three';
+import type { Texture } from 'three';
 import { DEFAULT_TUNING, quantizeParticleCount, type ParticleTuning } from '../config/defaults';
 import { RendererManager } from '../core/RendererManager';
 import { SceneRig } from '../core/SceneRig';
 import { createDemoImageCanvas } from '../image/DemoImageFactory';
+import { analyzeImage, type ProcessedImage } from '../image/ImageAnalyzer';
 import { loadCanvasFromFile } from '../image/ImageLoader';
-import { preprocessImage, type ProcessedParticleImage } from '../image/ImagePreprocessor';
-import { ParticleField } from '../particles/ParticleField';
-import { SimulationFBO } from '../particles/SimulationFBO';
+import { ParticleCloud } from '../particles/ParticleCloud';
+import { MouseField } from '../particles/MouseField';
+import { PostStack } from '../postprocessing/PostStack';
 import { AppShell } from '../ui/AppShell';
 import { ControlPanel } from '../ui/ControlPanel';
 import { clamp } from '../utils/math';
 
 export class SlowMoFocusApp {
-  private static readonly DEBUG_LABELS = [
-    'Live view',
-    'Debug 1: Subject matte',
-    'Debug 2: Silhouette distance',
-    'Debug 3: Shell eligibility',
-    'Debug 4: Particle states',
-    'Debug 5: Force / velocity',
-  ] as const;
-
   private readonly tuning: ParticleTuning = { ...DEFAULT_TUNING };
   private shell!: AppShell;
   private rendererManager!: RendererManager;
   private sceneRig!: SceneRig;
   private controlPanel!: ControlPanel;
-  private readonly particleField = new ParticleField();
-  private simulation: SimulationFBO | null = null;
-  private processedImage: ProcessedParticleImage | null = null;
+  private particleCloud!: ParticleCloud;
+  private mouseField!: MouseField;
+  private postStack!: PostStack;
+  private sourceTexture: Texture | null = null;
+  private processedImage: ProcessedImage | null = null;
   private currentSourceCanvas: HTMLCanvasElement | null = null;
   private animationFrameId = 0;
   private lastFrameTime = 0;
+  private imageAspect = 1;
   private isRebuilding = false;
-  private debugMode = 0;
-  private particleMetaBase = '';
   private dragPointerId: number | null = null;
   private lastDragX = 0;
   private lastDragY = 0;
@@ -44,7 +39,17 @@ export class SlowMoFocusApp {
     this.shell = new AppShell(this.mount);
     this.rendererManager = new RendererManager(this.shell.canvasHost);
     this.sceneRig = new SceneRig();
-    this.sceneRig.particleGroup.add(this.particleField.group);
+
+    this.particleCloud = new ParticleCloud();
+    this.sceneRig.particleGroup.add(this.particleCloud.points);
+
+    this.mouseField = new MouseField(this.rendererManager.renderer);
+
+    this.postStack = new PostStack(
+      this.rendererManager.renderer,
+      this.sceneRig.scene,
+      this.sceneRig.camera,
+    );
 
     this.controlPanel = new ControlPanel(this.shell.guiHost, this.tuning, {
       onLiveChange: () => this.applyTuning(),
@@ -66,65 +71,65 @@ export class SlowMoFocusApp {
     window.addEventListener('keydown', this.handleKeyDown);
     this.shell.uploadButton.addEventListener('click', this.triggerUpload);
     this.shell.uploadInput.addEventListener('change', this.handleUploadChange);
-    this.shell.canvasHost.addEventListener('pointerdown', this.handlePointerDown);
     this.shell.canvasHost.addEventListener('pointermove', this.handlePointerMove);
+    this.shell.canvasHost.addEventListener('pointerleave', this.handlePointerLeave);
+    this.shell.canvasHost.addEventListener('pointerdown', this.handlePointerDown);
     this.shell.canvasHost.addEventListener('pointerup', this.handlePointerUp);
     this.shell.canvasHost.addEventListener('pointercancel', this.handlePointerUp);
-    this.shell.canvasHost.addEventListener('pointerleave', this.handlePointerUp);
+    this.shell.canvasHost.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private readonly handleResize = (): void => {
     const { width, height } = this.rendererManager.resize();
     this.sceneRig.resize(width, height);
-    this.particleField.updateViewport(width, height);
+    this.particleCloud.updateViewport(width, height);
+    this.postStack.resize(width, height);
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
     this.dragPointerId = event.pointerId;
     this.lastDragX = event.clientX;
     this.lastDragY = event.clientY;
-    this.shell.canvasHost.classList.add('is-dragging');
     this.shell.canvasHost.setPointerCapture(event.pointerId);
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
-    if (this.dragPointerId !== event.pointerId) {
-      return;
+    if (this.dragPointerId === event.pointerId) {
+      const deltaX = event.clientX - this.lastDragX;
+      const deltaY = event.clientY - this.lastDragY;
+      this.lastDragX = event.clientX;
+      this.lastDragY = event.clientY;
+      this.sceneRig.dragBy(deltaX, deltaY, 0.2);
     }
 
-    const deltaX = event.clientX - this.lastDragX;
-    const deltaY = event.clientY - this.lastDragY;
-    this.lastDragX = event.clientX;
-    this.lastDragY = event.clientY;
-    this.sceneRig.dragBy(deltaX, deltaY, clamp(this.tuning.parallaxAmount, 0.08, 0.42));
+    const rect = this.shell.canvasHost.getBoundingClientRect();
+    const canvasX = event.clientX - rect.left;
+    const canvasY = event.clientY - rect.top;
+    const ndcX = (canvasX / rect.width) * 2 - 1;
+    const ndcY = -(canvasY / rect.height) * 2 + 1;
+
+    const uv = this.sceneRig.screenToUV(ndcX, ndcY, this.imageAspect);
+    if (uv) {
+      this.mouseField.setMouseUV(uv.u, uv.v);
+    }
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
-    if (this.dragPointerId !== event.pointerId) {
-      return;
+    if (this.dragPointerId === event.pointerId) {
+      if (this.shell.canvasHost.hasPointerCapture(event.pointerId)) {
+        this.shell.canvasHost.releasePointerCapture(event.pointerId);
+      }
+      this.dragPointerId = null;
     }
+  };
 
-    if (this.shell.canvasHost.hasPointerCapture(event.pointerId)) {
-      this.shell.canvasHost.releasePointerCapture(event.pointerId);
-    }
-
-    this.dragPointerId = null;
-    this.shell.canvasHost.classList.remove('is-dragging');
+  private readonly handlePointerLeave = (): void => {
+    this.mouseField.setMouseInactive();
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.code === 'KeyT') {
       this.controlPanel.toggle();
-      return;
-    }
-
-    if (event.code === 'Digit0') {
-      this.setDebugMode(0);
-      return;
-    }
-
-    if (/^Digit[1-5]$/.test(event.code)) {
-      this.setDebugMode(Number.parseInt(event.code.slice(-1), 10));
     }
   };
 
@@ -134,14 +139,12 @@ export class SlowMoFocusApp {
 
   private readonly handleUploadChange = async (): Promise<void> => {
     const [file] = this.shell.uploadInput.files ?? [];
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     try {
-      this.shell.setStatus('Loading upload…', `Preparing "${file.name}" for dense reconstruction.`);
+      this.shell.setStatus('Loading upload...', `Preparing "${file.name}".`);
       this.currentSourceCanvas = await loadCanvasFromFile(file);
-      await this.rebuildFromCurrentSource(`Uploaded source: ${file.name}`);
+      await this.rebuildFromCurrentSource(`Uploaded: ${file.name}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown upload error.';
       this.shell.setStatus('Upload failed', message);
@@ -153,53 +156,54 @@ export class SlowMoFocusApp {
 
   private applyTuning(): void {
     this.shell.setBackgroundIntensity(this.tuning.backgroundIntensity);
-    this.particleField.updateTuning(this.tuning);
-  }
-
-  private setDebugMode(mode: number): void {
-    this.debugMode = clamp(mode, 0, 5);
-    this.particleField.setDebugMode(this.debugMode);
-    this.updateParticleMeta();
-  }
-
-  private updateParticleMeta(): void {
-    const label = SlowMoFocusApp.DEBUG_LABELS[this.debugMode];
-    const decorated = this.particleMetaBase ? `${this.particleMetaBase} · ${label}` : label;
-    this.shell.setParticleMeta(decorated);
+    this.particleCloud.updateTuning(this.tuning);
+    this.postStack.updateTuning(this.tuning);
+    this.mouseField.updateMouseRadius(this.tuning.mouseRadius);
   }
 
   private async rebuildFromCurrentSource(reason: string): Promise<void> {
-    if (!this.currentSourceCanvas || this.isRebuilding) {
-      return;
-    }
-
+    if (!this.currentSourceCanvas || this.isRebuilding) return;
     this.isRebuilding = true;
-    this.shell.setStatus('Analyzing source image…', 'Deriving anchor positions, core density, and erosion weights.');
+    this.shell.setStatus('Analyzing image...', 'Computing edges, distance field, and silhouette.');
 
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 
     try {
-      const { count, resolution } = quantizeParticleCount(this.tuning.particleCount);
-      const nextProcessed = preprocessImage(this.currentSourceCanvas, resolution);
-      const nextSimulation = new SimulationFBO(this.rendererManager.renderer, resolution);
-      nextSimulation.initialize(nextProcessed);
+      const canvas = this.currentSourceCanvas;
+      this.imageAspect = canvas.width / canvas.height;
 
+      // Dispose previous
+      this.sourceTexture?.dispose();
       this.processedImage?.dispose();
-      this.simulation?.dispose();
 
-      this.processedImage = nextProcessed;
-      this.simulation = nextSimulation;
-      this.particleField.rebuild(nextProcessed);
-      this.particleField.setDebugMode(this.debugMode);
-      this.particleField.updateViewport(this.shell.canvasHost.clientWidth, this.shell.canvasHost.clientHeight);
-      this.particleField.setSimulationTextures(nextSimulation.positionTexture, nextSimulation.velocityTexture);
+      // Source texture
+      this.sourceTexture = new CanvasTexture(canvas);
+      this.sourceTexture.flipY = false;
+      this.sourceTexture.minFilter = LinearFilter;
+      this.sourceTexture.magFilter = LinearFilter;
+      this.sourceTexture.wrapS = ClampToEdgeWrapping;
+      this.sourceTexture.wrapT = ClampToEdgeWrapping;
+      this.sourceTexture.needsUpdate = true;
+
+      // Analyze image → edge mask, distance field, silhouette
+      this.processedImage = analyzeImage(canvas);
+
+      const { count, gridX, gridY } = quantizeParticleCount(this.tuning.particleCount);
+
+      this.particleCloud.rebuild(gridX, gridY, this.imageAspect);
+      this.particleCloud.setSourceImage(this.sourceTexture);
+      this.particleCloud.setMaskTexture(this.processedImage.maskTexture);
+      this.particleCloud.setMouseTexture(this.mouseField.texture);
+      this.particleCloud.updateViewport(
+        this.shell.canvasHost.clientWidth,
+        this.shell.canvasHost.clientHeight,
+      );
       this.applyTuning();
 
-      this.shell.setStatus(reason, 'The image is now rebuilt as a dense living particle surface with a stable core and unstable contour.');
-      this.particleMetaBase = `${count.toLocaleString()} particles · ${resolution} x ${resolution} simulation texture`;
-      this.updateParticleMeta();
+      this.shell.setStatus(reason, 'Stable core, living edge. Drag to orbit, hover for disturbance.');
+      this.shell.setParticleMeta(`${count.toLocaleString()} particles`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown preprocessing failure.';
+      const message = error instanceof Error ? error.message : 'Rebuild failed.';
       this.shell.setStatus('Rebuild failed', message);
       console.error(error);
     } finally {
@@ -209,17 +213,20 @@ export class SlowMoFocusApp {
 
   private readonly animate = (time: number): void => {
     const elapsedTime = time * 0.001;
-    const delta = this.lastFrameTime === 0 ? 1 / 60 : clamp((time - this.lastFrameTime) * 0.001, 1 / 240, 1 / 24);
+    const delta = this.lastFrameTime === 0
+      ? 1 / 60
+      : clamp((time - this.lastFrameTime) * 0.001, 1 / 240, 1 / 24);
     this.lastFrameTime = time;
 
-    this.sceneRig.update(delta, this.tuning.parallaxAmount);
+    this.sceneRig.update(delta);
+    this.particleCloud.updateTime(elapsedTime);
 
-    if (this.simulation) {
-      this.simulation.update(delta, elapsedTime, this.tuning);
-      this.particleField.setSimulationTextures(this.simulation.positionTexture, this.simulation.velocityTexture);
-    }
+    this.mouseField.update(delta);
+    this.particleCloud.setMouseTexture(this.mouseField.texture);
 
-    this.rendererManager.renderer.render(this.sceneRig.scene, this.sceneRig.camera);
+    this.postStack.updateCamera(this.sceneRig.camera);
+    this.postStack.render(delta);
+
     this.animationFrameId = window.requestAnimationFrame(this.animate);
   };
 
@@ -229,14 +236,16 @@ export class SlowMoFocusApp {
     window.removeEventListener('keydown', this.handleKeyDown);
     this.shell.uploadButton.removeEventListener('click', this.triggerUpload);
     this.shell.uploadInput.removeEventListener('change', this.handleUploadChange);
-    this.shell.canvasHost.removeEventListener('pointerdown', this.handlePointerDown);
     this.shell.canvasHost.removeEventListener('pointermove', this.handlePointerMove);
+    this.shell.canvasHost.removeEventListener('pointerleave', this.handlePointerLeave);
+    this.shell.canvasHost.removeEventListener('pointerdown', this.handlePointerDown);
     this.shell.canvasHost.removeEventListener('pointerup', this.handlePointerUp);
     this.shell.canvasHost.removeEventListener('pointercancel', this.handlePointerUp);
-    this.shell.canvasHost.removeEventListener('pointerleave', this.handlePointerUp);
     this.controlPanel.dispose();
-    this.particleField.dispose();
-    this.simulation?.dispose();
+    this.particleCloud.dispose();
+    this.mouseField.dispose();
+    this.postStack.dispose();
+    this.sourceTexture?.dispose();
     this.processedImage?.dispose();
     this.rendererManager.dispose();
     this.shell.dispose();

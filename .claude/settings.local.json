@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(git -C d:/SlowMo-VibeFocus log --oneline -10)",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[8000:16000]\\)\")",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[16000:24000]\\)\")",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[24000:32000]\\)\")",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[32000:40000]\\)\")",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[40000:48000]\\)\")",
+      "Bash(node -e \"const pkg = require\\('./node_modules/three/package.json'\\); console.log\\('three version:', pkg.version\\)\")",
+      "Bash(node -e \"const path = require\\('path'\\); const res = require.resolve\\('three/addons/postprocessing/EffectComposer.js'\\); console.log\\(res ? 'RESOLVED' : 'FAILED'\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)"
+    ]
+  }
+}

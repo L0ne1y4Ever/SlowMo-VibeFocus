@@ -23,30 +23,30 @@ export class ControlPanel {
       this.gui.hide();
     }
 
-    this.gui.add(tuning, 'particleCount', 65_536, 1_048_576, 4_096).name('Particle Count').onFinishChange(() => {
+    this.gui.add(tuning, 'particleCount', 65_536, 1_048_576, 4096).name('Particle Count').onFinishChange(() => {
       callbacks.onParticleCountCommit();
       callbacks.onLiveChange();
     });
-    this.gui.add(tuning, 'particleSize', 0.9, 5.5, 0.01).name('Particle Size').onChange(callbacks.onLiveChange);
-    this.gui.add(tuning, 'densityCompensation', 0.7, 2.4, 0.01).name('Density Compensation').onChange(callbacks.onLiveChange);
-    this.gui.add(tuning, 'alphaGain', 0.35, 2.4, 0.01).name('Alpha Gain').onChange(callbacks.onLiveChange);
-    this.gui.add(tuning, 'brightness', 0.65, 1.6, 0.01).name('Brightness').onChange(callbacks.onLiveChange);
+    this.gui.add(tuning, 'particleSize', 0.5, 5.0, 0.01).name('Particle Size').onChange(callbacks.onLiveChange);
+    this.gui.add(tuning, 'contrast', 0.5, 3.0, 0.01).name('Contrast').onChange(callbacks.onLiveChange);
+    this.gui.add(tuning, 'colorTint', 0.0, 1.0, 0.01).name('Color Tint').onChange(callbacks.onLiveChange);
+    this.gui.add(tuning, 'alphaGain', 0.1, 3.0, 0.01).name('Alpha Gain').onChange(callbacks.onLiveChange);
 
     const motion = this.gui.addFolder('Motion');
-    motion.add(tuning, 'attractionStrength', 0.2, 2.4, 0.01).name('Attraction').onChange(callbacks.onLiveChange);
-    motion.add(tuning, 'flowStrength', 0.05, 1.4, 0.01).name('Flow Strength').onChange(callbacks.onLiveChange);
-    motion.add(tuning, 'erosionStrength', 0.05, 1.8, 0.01).name('Erosion Strength').onChange(callbacks.onLiveChange);
-    motion.add(tuning, 'damping', 0.05, 0.6, 0.005).name('Damping').onChange(callbacks.onLiveChange);
-    motion.add(tuning, 'motionSpeed', 0.25, 1.6, 0.01).name('Motion Speed').onChange(callbacks.onLiveChange);
+    motion.add(tuning, 'flowSpeed', 0.0, 0.5, 0.01).name('Flow Speed').onChange(callbacks.onLiveChange);
+    motion.add(tuning, 'flowAmplitude', 0.0, 0.03, 0.001).name('Flow Amplitude').onChange(callbacks.onLiveChange);
+    motion.add(tuning, 'edgeLooseness', 0.0, 2.0, 0.01).name('Edge Looseness').onChange(callbacks.onLiveChange);
+    motion.add(tuning, 'depthStrength', 0.0, 1.0, 0.01).name('Depth Strength').onChange(callbacks.onLiveChange);
 
-    const edge = this.gui.addFolder('Edge Stability');
-    edge.add(tuning, 'edgeThreshold', 0.05, 0.9, 0.01).name('Edge Threshold').onChange(callbacks.onLiveChange);
-    edge.add(tuning, 'edgeBoost', 0.45, 1.8, 0.01).name('Edge Boost').onChange(callbacks.onLiveChange);
-    edge.add(tuning, 'depthThickness', 0.05, 0.48, 0.005).name('Depth Thickness').onChange(callbacks.onLiveChange);
+    const mouse = this.gui.addFolder('Mouse');
+    mouse.add(tuning, 'mouseRadius', 0.02, 0.2, 0.005).name('Radius').onChange(callbacks.onLiveChange);
+    mouse.add(tuning, 'mouseStrength', 0.0, 1.0, 0.01).name('Strength').onChange(callbacks.onLiveChange);
 
-    const scene = this.gui.addFolder('Presentation');
-    scene.add(tuning, 'backgroundIntensity', 0.2, 1, 0.01).name('Background').onChange(callbacks.onLiveChange);
-    scene.add(tuning, 'parallaxAmount', 0, 0.42, 0.001).name('Parallax').onChange(callbacks.onLiveChange);
+    const post = this.gui.addFolder('Post-Processing');
+    post.add(tuning, 'bloomStrength', 0.0, 1.0, 0.01).name('Bloom Strength').onChange(callbacks.onLiveChange);
+    post.add(tuning, 'bloomRadius', 0.0, 1.0, 0.01).name('Bloom Radius').onChange(callbacks.onLiveChange);
+    post.add(tuning, 'bloomThreshold', 0.5, 1.0, 0.01).name('Bloom Threshold').onChange(callbacks.onLiveChange);
+    post.add(tuning, 'chromaticAberration', 0.0, 3.0, 0.1).name('Chromatic Shift').onChange(callbacks.onLiveChange);
   }
 
   toggle(): void {

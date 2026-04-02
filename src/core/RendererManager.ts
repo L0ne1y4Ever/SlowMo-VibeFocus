@@ -11,18 +11,18 @@ export class RendererManager {
 
   constructor(private readonly host: HTMLElement) {
     this.renderer = new WebGLRenderer({
-      antialias: true,
-      alpha: true,
+      antialias: false,
+      alpha: false,
       powerPreference: 'high-performance',
     });
-    this.renderer.setClearColor(RENDER_CONSTANTS.clearColor, 0);
+    this.renderer.setClearColor(RENDER_CONSTANTS.clearColor, 1);
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
     if (!this.renderer.capabilities.isWebGL2) {
-      throw new Error('SlowMoFocus requires WebGL2 for its GPU simulation pipeline.');
+      throw new Error('SlowMoFocus requires WebGL2.');
     }
 
     this.canvas = this.renderer.domElement;

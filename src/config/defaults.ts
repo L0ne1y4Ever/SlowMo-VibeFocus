@@ -1,66 +1,57 @@
 export interface ParticleTuning {
   particleCount: number;
   particleSize: number;
-  attractionStrength: number;
-  flowStrength: number;
-  erosionStrength: number;
-  edgeThreshold: number;
-  edgeBoost: number;
-  damping: number;
-  depthThickness: number;
-  motionSpeed: number;
-  densityCompensation: number;
-  brightness: number;
+  contrast: number;
+  colorTint: number;
   alphaGain: number;
+  flowSpeed: number;
+  flowAmplitude: number;
+  edgeLooseness: number;
+  depthStrength: number;
+  mouseRadius: number;
+  mouseStrength: number;
+  bloomStrength: number;
+  bloomRadius: number;
+  bloomThreshold: number;
+  chromaticAberration: number;
   backgroundIntensity: number;
-  parallaxAmount: number;
 }
 
-export const DEFAULT_PARTICLE_COUNT = 1_048_576;
-
 export const DEFAULT_TUNING: ParticleTuning = {
-  particleCount: DEFAULT_PARTICLE_COUNT,
-  particleSize: 1.9,
-  attractionStrength: 1.88,
-  flowStrength: 0.28,
-  erosionStrength: 1.26,
-  edgeThreshold: 0.46,
-  edgeBoost: 1.48,
-  damping: 0.19,
-  depthThickness: 0.18,
-  motionSpeed: 0.84,
-  densityCompensation: 1.98,
-  brightness: 1.02,
-  alphaGain: 1.82,
-  backgroundIntensity: 0.66,
-  parallaxAmount: 0.22,
+  particleCount: 350_000,
+  particleSize: 2.0,
+  contrast: 1.5,
+  colorTint: 0.55,
+  alphaGain: 1.0,
+  flowSpeed: 0.12,
+  flowAmplitude: 0.008,
+  edgeLooseness: 0.8,
+  depthStrength: 0.3,
+  mouseRadius: 0.08,
+  mouseStrength: 0.3,
+  bloomStrength: 0.25,
+  bloomRadius: 0.3,
+  bloomThreshold: 0.92,
+  chromaticAberration: 0.8,
+  backgroundIntensity: 0.0,
 };
 
 export interface RenderConstants {
   clearColor: number;
   cameraFov: number;
   cameraDistance: number;
-  longestImageSide: number;
-  analysisMaxDimension: number;
+  mouseFieldResolution: number;
 }
 
 export const RENDER_CONSTANTS: RenderConstants = {
-  clearColor: 0x040507,
-  cameraFov: 30,
-  cameraDistance: 3.35,
-  longestImageSide: 1.34,
-  analysisMaxDimension: 512,
+  clearColor: 0x000000,
+  cameraFov: 50,
+  cameraDistance: 1.8,
+  mouseFieldResolution: 256,
 };
 
-export function quantizeParticleCount(requestedCount: number): { count: number; resolution: number } {
-  const clamped = Math.max(65_536, Math.min(1_048_576, Math.round(requestedCount)));
-  const resolution = Math.ceil(Math.sqrt(clamped));
-  return {
-    count: resolution * resolution,
-    resolution,
-  };
-}
-
-export function densityScale(count: number, compensation: number): number {
-  return Math.sqrt(DEFAULT_PARTICLE_COUNT / count) * compensation;
+export function quantizeParticleCount(requested: number): { count: number; gridX: number; gridY: number } {
+  const clamped = Math.max(256, Math.min(1_048_576, Math.round(requested)));
+  const side = Math.ceil(Math.sqrt(clamped));
+  return { count: side * side, gridX: side, gridY: side };
 }
