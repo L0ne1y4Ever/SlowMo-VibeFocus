@@ -19,20 +19,20 @@ export interface ParticleTuning {
 
 export const DEFAULT_TUNING: ParticleTuning = {
   particleCount: 350_000,
-  particleSize: 2.0,
-  contrast: 1.5,
-  colorTint: 0.55,
-  alphaGain: 1.0,
+  particleSize: 1.34,
+  contrast: 1.22,
+  colorTint: 0.86,
+  alphaGain: 1.16,
   flowSpeed: 0.12,
-  flowAmplitude: 0.008,
-  edgeLooseness: 0.8,
-  depthStrength: 0.3,
+  flowAmplitude: 0.011,
+  edgeLooseness: 0.82,
+  depthStrength: 0.18,
   mouseRadius: 0.08,
-  mouseStrength: 0.3,
-  bloomStrength: 0.25,
-  bloomRadius: 0.3,
-  bloomThreshold: 0.92,
-  chromaticAberration: 0.8,
+  mouseStrength: 0.28,
+  bloomStrength: 0.16,
+  bloomRadius: 0.22,
+  bloomThreshold: 0.96,
+  chromaticAberration: 0.35,
   backgroundIntensity: 0.0,
 };
 
@@ -41,6 +41,7 @@ export interface RenderConstants {
   cameraFov: number;
   cameraDistance: number;
   mouseFieldResolution: number;
+  baseAccumulationScale: number;
 }
 
 export const RENDER_CONSTANTS: RenderConstants = {
@@ -48,6 +49,7 @@ export const RENDER_CONSTANTS: RenderConstants = {
   cameraFov: 50,
   cameraDistance: 1.8,
   mouseFieldResolution: 256,
+  baseAccumulationScale: 0.67,
 };
 
 export function quantizeParticleCount(requested: number): { count: number; gridX: number; gridY: number } {

@@ -1,5 +1,5 @@
 import { Vector2 } from 'three';
-import type { Camera, Scene, WebGLRenderer } from 'three';
+import type { Camera, Scene, Texture, WebGLRenderer } from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { ParticleTuning } from '../config/defaults';
 import chromaticFragmentShader from './shaders/chromatic.frag.glsl?raw';
+import baseCompositeFragmentShader from './shaders/base-composite.frag.glsl?raw';
 
 const ChromaticAberrationShader = {
   name: 'ChromaticAberrationShader',
@@ -25,8 +26,26 @@ const ChromaticAberrationShader = {
   fragmentShader: chromaticFragmentShader,
 };
 
+const BaseCompositeShader = {
+  name: 'BaseCompositeShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    tBaseAccum: { value: null as Texture | null },
+    uAlphaGain: { value: 1.0 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: baseCompositeFragmentShader,
+};
+
 export class PostStack {
   private readonly composer: EffectComposer;
+  private readonly baseCompositePass: ShaderPass;
   private readonly bloomPass: UnrealBloomPass;
   private readonly chromaticPass: ShaderPass;
   private readonly renderPass: RenderPass;
@@ -34,7 +53,11 @@ export class PostStack {
   constructor(renderer: WebGLRenderer, scene: Scene, camera: Camera) {
     this.composer = new EffectComposer(renderer);
 
+    this.baseCompositePass = new ShaderPass(BaseCompositeShader);
+    this.composer.addPass(this.baseCompositePass);
+
     this.renderPass = new RenderPass(scene, camera);
+    this.renderPass.clear = false;
     this.composer.addPass(this.renderPass);
 
     const size = renderer.getSize(new Vector2());
@@ -52,7 +75,12 @@ export class PostStack {
     this.renderPass.camera = camera;
   }
 
+  setBaseAccumulationTexture(texture: Texture | null): void {
+    this.baseCompositePass.uniforms['tBaseAccum'].value = texture;
+  }
+
   updateTuning(tuning: ParticleTuning): void {
+    this.baseCompositePass.uniforms['uAlphaGain'].value = tuning.alphaGain;
     this.bloomPass.strength = tuning.bloomStrength;
     this.bloomPass.radius = tuning.bloomRadius;
     this.bloomPass.threshold = tuning.bloomThreshold;

@@ -11,7 +11,9 @@
       "Bash(node -e \"const pkg = require\\('./node_modules/three/package.json'\\); console.log\\('three version:', pkg.version\\)\")",
       "Bash(node -e \"const path = require\\('path'\\); const res = require.resolve\\('three/addons/postprocessing/EffectComposer.js'\\); console.log\\(res ? 'RESOLVED' : 'FAILED'\\)\")",
       "Bash(npx tsc:*)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(pnpm check:*)",
+      "Bash(pnpm build:*)"
     ]
   }
 }

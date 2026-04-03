@@ -4,13 +4,24 @@ import type { ParticleTuning } from '../config/defaults';
 interface ControlPanelCallbacks {
   onLiveChange: () => void;
   onParticleCountCommit: () => void;
+  onMicToggle: (enabled: boolean) => void;
+}
+
+export interface ControlPanelState {
+  micEnabled: boolean;
 }
 
 export class ControlPanel {
   private readonly gui: GUI;
   private visible: boolean;
+  private readonly micController: ReturnType<GUI['add']>;
 
-  constructor(container: HTMLElement, tuning: ParticleTuning, callbacks: ControlPanelCallbacks) {
+  constructor(
+    container: HTMLElement,
+    tuning: ParticleTuning,
+    state: ControlPanelState,
+    callbacks: ControlPanelCallbacks,
+  ) {
     this.gui = new GUI({
       container,
       title: 'Particle Tuning',
@@ -42,6 +53,12 @@ export class ControlPanel {
     mouse.add(tuning, 'mouseRadius', 0.02, 0.2, 0.005).name('Radius').onChange(callbacks.onLiveChange);
     mouse.add(tuning, 'mouseStrength', 0.0, 1.0, 0.01).name('Strength').onChange(callbacks.onLiveChange);
 
+    const audio = this.gui.addFolder('Audio');
+    this.micController = audio
+      .add(state, 'micEnabled')
+      .name('Mic Input')
+      .onChange((value: boolean) => callbacks.onMicToggle(value));
+
     const post = this.gui.addFolder('Post-Processing');
     post.add(tuning, 'bloomStrength', 0.0, 1.0, 0.01).name('Bloom Strength').onChange(callbacks.onLiveChange);
     post.add(tuning, 'bloomRadius', 0.0, 1.0, 0.01).name('Bloom Radius').onChange(callbacks.onLiveChange);
@@ -60,5 +77,9 @@ export class ControlPanel {
 
   dispose(): void {
     this.gui.destroy();
+  }
+
+  refresh(): void {
+    this.micController.updateDisplay();
   }
 }

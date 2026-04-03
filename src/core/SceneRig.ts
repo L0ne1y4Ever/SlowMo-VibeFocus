@@ -1,28 +1,41 @@
 import {
-  Group,
   PerspectiveCamera,
   Plane,
   Raycaster,
   Scene,
   Vector2,
   Vector3,
+  Group,
 } from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RENDER_CONSTANTS } from '../config/defaults';
-import { damp } from '../utils/math';
+import type { ContentFrame } from '../image/ImageAnalyzer';
 
 export class SceneRig {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(RENDER_CONSTANTS.cameraFov, 1, 0.1, 20);
   readonly particleGroup = new Group();
-  private targetRotation = new Vector2();
-  private currentRotation = new Vector2();
+  readonly controls: OrbitControls;
   private readonly raycaster = new Raycaster();
   private readonly groundPlane = new Plane(new Vector3(0, 0, 1), 0);
+  private draggingOrbit = false;
 
-  constructor() {
+  constructor(domElement: HTMLElement) {
     this.camera.position.set(0, 0, RENDER_CONSTANTS.cameraDistance);
-    this.camera.lookAt(0, 0, 0);
     this.scene.add(this.particleGroup);
+
+    this.controls = new OrbitControls(this.camera, domElement);
+    this.controls.enablePan = false;
+    this.controls.enableZoom = false;
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.09;
+    this.controls.rotateSpeed = 0.9;
+    this.controls.minPolarAngle = 0.22;
+    this.controls.maxPolarAngle = Math.PI - 0.22;
+    this.controls.target.set(0, 0, 0.1);
+    this.controls.addEventListener('start', this.handleControlStart);
+    this.controls.addEventListener('end', this.handleControlEnd);
+    this.controls.update();
   }
 
   resize(width: number, height: number): void {
@@ -30,36 +43,42 @@ export class SceneRig {
     this.camera.updateProjectionMatrix();
   }
 
-  dragBy(deltaX: number, deltaY: number, parallaxAmount: number): void {
-    const dragScale = 0.003 + parallaxAmount * 0.006;
-    this.targetRotation.y += deltaX * dragScale;
-    this.targetRotation.x += deltaY * dragScale * 0.94;
-    this.targetRotation.x = Math.max(-0.3, Math.min(0.3, this.targetRotation.x));
-    this.targetRotation.y = Math.max(-0.5, Math.min(0.5, this.targetRotation.y));
+  get isOrbitDragging(): boolean {
+    return this.draggingOrbit;
   }
 
-  update(delta: number): void {
-    this.currentRotation.x = damp(this.currentRotation.x, this.targetRotation.x, 4.0, delta);
-    this.currentRotation.y = damp(this.currentRotation.y, this.targetRotation.y, 4.0, delta);
-
-    const dist = RENDER_CONSTANTS.cameraDistance;
-    const cosPitch = Math.cos(this.currentRotation.x);
-    this.camera.position.x = Math.sin(this.currentRotation.y) * cosPitch * dist;
-    this.camera.position.y = Math.sin(this.currentRotation.x) * dist;
-    this.camera.position.z = Math.cos(this.currentRotation.y) * cosPitch * dist;
-    this.camera.lookAt(0, 0, 0);
+  setReliefDepth(depthStrength: number): void {
+    this.controls.target.set(0, 0, 0.025 + depthStrength * 0.08);
   }
 
-  screenToUV(ndcX: number, ndcY: number, aspect: number): { u: number; v: number } | null {
+  private readonly handleControlStart = (): void => {
+    this.draggingOrbit = true;
+  };
+
+  private readonly handleControlEnd = (): void => {
+    this.draggingOrbit = false;
+  };
+
+  update(): void {
+    this.controls.update();
+  }
+
+  screenToUV(ndcX: number, ndcY: number, frame: ContentFrame): { u: number; v: number } | null {
     this.raycaster.setFromCamera(new Vector2(ndcX, ndcY), this.camera);
     const intersection = new Vector3();
     const hit = this.raycaster.ray.intersectPlane(this.groundPlane, intersection);
     if (!hit) return null;
 
-    const u = intersection.x / aspect + 0.5;
-    const v = 0.5 - intersection.y;
+    const u = frame.centerU + intersection.x * (frame.heightUV / frame.imageAspect);
+    const v = frame.centerV - intersection.y * frame.heightUV;
 
     if (u < -0.1 || u > 1.1 || v < -0.1 || v > 1.1) return null;
     return { u, v };
+  }
+
+  dispose(): void {
+    this.controls.removeEventListener('start', this.handleControlStart);
+    this.controls.removeEventListener('end', this.handleControlEnd);
+    this.controls.dispose();
   }
 }
