@@ -10,7 +10,6 @@ import {
   HalfFloatType,
   LinearFilter,
   OneFactor,
-  OneMinusSrcAlphaFactor,
   Points,
   RGBAFormat,
   RawShaderMaterial,
@@ -23,51 +22,28 @@ import { RENDER_CONSTANTS } from '../config/defaults';
 import type { AudioFrame } from '../audio/AudioInputManager';
 import type { ProcessedImage } from '../image/ImageAnalyzer';
 import { disposeRenderTarget } from '../utils/dispose';
-import { hash11, r2Sequence } from '../utils/math';
+import { hash11 } from '../utils/math';
 import baseAccumVertexShader from './shaders/base-accum.vert.glsl?raw';
 import baseAccumFragmentShader from './shaders/base-accum.frag.glsl?raw';
-import peelVertexShader from './shaders/peel.vert.glsl?raw';
-import peelFragmentShader from './shaders/peel.frag.glsl?raw';
-
-interface BaseSampleSet {
-  readonly positions: Float32Array;
-  readonly uvs: Float32Array;
-  readonly seeds: Float32Array;
-  readonly weights: Float32Array;
-  readonly pixelIndices: Uint32Array;
-  readonly count: number;
-}
 
 export class ParticleCloud {
   readonly group: Group;
   readonly baseScene: Scene;
 
   private baseGeometry: BufferGeometry;
-  private peelGeometry: BufferGeometry;
   private readonly baseMaterial: RawShaderMaterial;
-  private readonly peelMaterial: RawShaderMaterial;
   private readonly basePoints: Points;
-  private readonly peelPoints: Points;
   private accumulationTarget: WebGLRenderTarget | null = null;
 
   constructor() {
     this.group = new Group();
     this.baseScene = new Scene();
     this.baseGeometry = new BufferGeometry();
-    this.peelGeometry = new BufferGeometry();
 
     this.baseMaterial = this.createBaseMaterial();
-    this.peelMaterial = this.createPeelMaterial();
-
     this.basePoints = new Points(this.baseGeometry, this.baseMaterial);
     this.basePoints.frustumCulled = false;
-    this.basePoints.renderOrder = 4;
     this.baseScene.add(this.basePoints);
-
-    this.peelPoints = new Points(this.peelGeometry, this.peelMaterial);
-    this.peelPoints.frustumCulled = false;
-    this.peelPoints.renderOrder = 16;
-    this.group.add(this.peelPoints);
   }
 
   private createBaseMaterial() {
@@ -84,7 +60,6 @@ export class ParticleCloud {
       blendDst: OneFactor,
       uniforms: {
         uSourceImage: { value: null as Texture | null },
-        uAnalysisTexture: { value: null as Texture | null },
         uMouseTexture: { value: null as Texture | null },
         uTime: { value: 0 },
         uAudioLevel: { value: 0 },
@@ -97,41 +72,10 @@ export class ParticleCloud {
         uFlowAmplitude: { value: 0.008 },
         uDepthStrength: { value: 0.24 },
         uMouseStrength: { value: 0.28 },
-        uColorTint: { value: 0.86 },
-      },
-    });
-  }
-
-  private createPeelMaterial() {
-    return new RawShaderMaterial({
-      glslVersion: GLSL3,
-      vertexShader: peelVertexShader,
-      fragmentShader: peelFragmentShader,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      blending: CustomBlending,
-      blendEquation: AddEquation,
-      blendSrc: OneFactor,
-      blendDst: OneMinusSrcAlphaFactor,
-      uniforms: {
-        uSourceImage: { value: null as Texture | null },
-        uAnalysisTexture: { value: null as Texture | null },
-        uMouseTexture: { value: null as Texture | null },
-        uTime: { value: 0 },
-        uAudioLevel: { value: 0 },
-        uAudioBass: { value: 0 },
-        uAudioMid: { value: 0 },
-        uAudioHigh: { value: 0 },
-        uParticleSize: { value: 1.5 },
-        uContrast: { value: 1.2 },
-        uFlowSpeed: { value: 0.12 },
-        uFlowAmplitude: { value: 0.008 },
         uEdgeLooseness: { value: 0.7 },
-        uDepthStrength: { value: 0.24 },
-        uMouseStrength: { value: 0.28 },
         uColorTint: { value: 0.86 },
         uAlphaGain: { value: 1.24 },
+        uContentAspect: { value: 1.0 },
       },
     });
   }
@@ -158,212 +102,82 @@ export class ParticleCloud {
     this.accumulationTarget = this.createTarget(width, height);
   }
 
-  private createWeightedSamples(
-    particleCount: number,
-    analysis: ProcessedImage,
-    weightData: Float32Array,
-    sequenceOffset: number,
-    threshold: number,
-    jitterScale: number,
-  ): BaseSampleSet {
-    const { analysisWidth, analysisHeight, contentFrame } = analysis;
+  private createGridGeometry(particleCount: number, analysis: ProcessedImage): BufferGeometry {
+    const { contentFrame } = analysis;
     const positions = new Float32Array(particleCount * 3);
     const uvs = new Float32Array(particleCount * 2);
     const seeds = new Float32Array(particleCount);
-    const weights = new Float32Array(particleCount);
-    const pixelIndices = new Uint32Array(particleCount);
+    
+    // We want a perfect mathematical grid
+    const side = Math.ceil(Math.sqrt(particleCount * contentFrame.imageAspect));
+    const rows = Math.ceil(particleCount / side);
 
-    const candidateIndices: number[] = [];
-    const cumulativeWeights: number[] = [];
-    let totalWeight = 0;
+    let idx = 0;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < side; x++) {
+        if (idx >= particleCount) break;
 
-    for (let i = 0; i < weightData.length; i++) {
-      const weight = weightData[i];
-      if (weight < threshold) {
-        continue;
+        const seed = hash11(idx + 1);
+        const jx = hash11(idx * 2.1 + 13.0) - 0.5;
+        const jy = hash11(idx * 3.4 + 17.0) - 0.5;
+
+        // Apply a small random jitter to break the perfect grid (anti-moire)
+        const jitter = 0.8;
+        const u = (x + 0.5 + jx * jitter) / side;
+        const v = (y + 0.5 + jy * jitter) / rows;
+
+        positions[idx * 3] = (u - 0.5) * contentFrame.imageAspect;
+        positions[idx * 3 + 1] = 0.5 - v;
+        positions[idx * 3 + 2] = 0;
+
+        uvs[idx * 2] = u;
+        uvs[idx * 2 + 1] = v;
+
+        seeds[idx] = seed;
+        idx++;
       }
-
-      totalWeight += weight;
-      candidateIndices.push(i);
-      cumulativeWeights.push(totalWeight);
-    }
-
-    if (candidateIndices.length === 0 || totalWeight <= 0) {
-      const side = Math.ceil(Math.sqrt(particleCount));
-      for (let i = 0; i < particleCount; i++) {
-        const x = i % side;
-        const y = Math.floor(i / side);
-        const u = (x + 0.5) / side;
-        const v = (y + 0.5) / side;
-        positions[i * 3] = (u - 0.5) * contentFrame.imageAspect;
-        positions[i * 3 + 1] = 0.5 - v;
-        positions[i * 3 + 2] = 0;
-        uvs[i * 2] = u;
-        uvs[i * 2 + 1] = v;
-        seeds[i] = hash11(i + 1);
-        weights[i] = 1;
-      }
-
-      return { positions, uvs, seeds, weights, pixelIndices, count: particleCount };
-    }
-
-    const pickCandidate = (value: number): number => {
-      let low = 0;
-      let high = cumulativeWeights.length - 1;
-      while (low < high) {
-        const mid = (low + high) >> 1;
-        if (value <= cumulativeWeights[mid]) {
-          high = mid;
-        } else {
-          low = mid + 1;
-        }
-      }
-      return low;
-    };
-
-    for (let i = 0; i < particleCount; i++) {
-      const [uRand, vRand] = r2Sequence(i + 1 + sequenceOffset);
-      const [jx, jy] = r2Sequence(i + 1 + sequenceOffset + particleCount);
-      const sampleIndex = pickCandidate(uRand * totalWeight);
-      const pixelIndex = candidateIndices[sampleIndex];
-      const weight = weightData[pixelIndex];
-      const px = pixelIndex % analysisWidth;
-      const py = Math.floor(pixelIndex / analysisWidth);
-      const jitterX = (jx - 0.5) * jitterScale;
-      const jitterY = (jy - 0.5) * jitterScale;
-      const u = (px + 0.5 + jitterX) / analysisWidth;
-      const v = (py + 0.5 + jitterY) / analysisHeight;
-
-      positions[i * 3] = ((u - contentFrame.centerU) / contentFrame.heightUV) * contentFrame.imageAspect;
-      positions[i * 3 + 1] = (contentFrame.centerV - v) / contentFrame.heightUV;
-      positions[i * 3 + 2] = 0;
-      uvs[i * 2] = u;
-      uvs[i * 2 + 1] = v;
-      seeds[i] = hash11(pixelIndex * 0.37 + vRand * 157.0 + (i + sequenceOffset) * 0.13);
-      weights[i] = weight;
-      pixelIndices[i] = pixelIndex;
-    }
-
-    return { positions, uvs, seeds, weights, pixelIndices, count: particleCount };
-  }
-
-  private geometryFromBaseSamples(samples: BaseSampleSet): BufferGeometry {
-    const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new BufferAttribute(samples.positions, 3));
-    geometry.setAttribute('uv', new BufferAttribute(samples.uvs, 2));
-    geometry.setAttribute('aSeed', new BufferAttribute(samples.seeds, 1));
-    geometry.setAttribute('aWeight', new BufferAttribute(samples.weights, 1));
-    return geometry;
-  }
-
-  private createPeelGeometry(
-    samples: BaseSampleSet,
-    analysis: ProcessedImage,
-    targetCount: number,
-  ): BufferGeometry {
-    const candidateIndices: Array<{ index: number; priority: number; bias: number; phase: number }> = [];
-
-    for (let i = 0; i < samples.count; i++) {
-      const pixelIndex = samples.pixelIndices[i];
-      const peelBias = analysis.peelEligibilityData[pixelIndex];
-      if (peelBias < 0.055) {
-        continue;
-      }
-
-      const seed = samples.seeds[i];
-      const priority = hash11(seed * 113.7 + i * 0.17 + 41.0) / (peelBias + 0.04);
-      candidateIndices.push({
-        index: i,
-        priority,
-        bias: peelBias,
-        phase: hash11(seed * 197.3 + i * 0.31 + 19.0),
-      });
-    }
-
-    candidateIndices.sort((left, right) => left.priority - right.priority);
-    const count = Math.min(targetCount, candidateIndices.length);
-
-    const positions = new Float32Array(count * 3);
-    const uvs = new Float32Array(count * 2);
-    const seeds = new Float32Array(count);
-    const weights = new Float32Array(count);
-    const peelBiases = new Float32Array(count);
-    const peelPhases = new Float32Array(count);
-    for (let i = 0; i < count; i++) {
-      const candidate = candidateIndices[i];
-      const sourceIndex = candidate.index;
-      positions[i * 3] = samples.positions[sourceIndex * 3];
-      positions[i * 3 + 1] = samples.positions[sourceIndex * 3 + 1];
-      positions[i * 3 + 2] = samples.positions[sourceIndex * 3 + 2];
-      uvs[i * 2] = samples.uvs[sourceIndex * 2];
-      uvs[i * 2 + 1] = samples.uvs[sourceIndex * 2 + 1];
-      seeds[i] = samples.seeds[sourceIndex];
-      weights[i] = samples.weights[sourceIndex];
-      peelBiases[i] = candidate.bias;
-      peelPhases[i] = candidate.phase;
     }
 
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
     geometry.setAttribute('aSeed', new BufferAttribute(seeds, 1));
-    geometry.setAttribute('aWeight', new BufferAttribute(weights, 1));
-    geometry.setAttribute('aPeelBias', new BufferAttribute(peelBiases, 1));
-    geometry.setAttribute('aPeelPhase', new BufferAttribute(peelPhases, 1));
     return geometry;
   }
 
   rebuild(particleCount: number, analysis: ProcessedImage): void {
     this.baseGeometry.dispose();
-    this.peelGeometry.dispose();
 
-    const baseSamples = this.createWeightedSamples(
-      particleCount,
-      analysis,
-      analysis.contentWeightData,
-      particleCount,
-      0.02,
-      0.96,
-    );
-    this.baseGeometry = this.geometryFromBaseSamples(baseSamples);
+    this.baseGeometry = this.createGridGeometry(particleCount, analysis);
     this.basePoints.geometry = this.baseGeometry;
-
-    const peelCount = Math.min(Math.floor(particleCount * 0.14), 120_000);
-    this.peelGeometry = this.createPeelGeometry(baseSamples, analysis, peelCount);
-    this.peelPoints.geometry = this.peelGeometry;
+    
+    this.baseMaterial.uniforms.uContentAspect.value = analysis.contentFrame.imageAspect;
   }
 
   setSourceImage(texture: Texture): void {
     texture.minFilter = LinearFilter;
     texture.magFilter = LinearFilter;
     this.baseMaterial.uniforms.uSourceImage.value = texture;
-    this.peelMaterial.uniforms.uSourceImage.value = texture;
   }
 
   setAnalysisTexture(texture: Texture): void {
-    this.baseMaterial.uniforms.uAnalysisTexture.value = texture;
-    this.peelMaterial.uniforms.uAnalysisTexture.value = texture;
+    // Unused now but kept to not break SlowMoFocusApp.ts
   }
 
   setMouseTexture(texture: Texture): void {
     this.baseMaterial.uniforms.uMouseTexture.value = texture;
-    this.peelMaterial.uniforms.uMouseTexture.value = texture;
   }
 
   updateTime(elapsedSeconds: number): void {
     this.baseMaterial.uniforms.uTime.value = elapsedSeconds;
-    this.peelMaterial.uniforms.uTime.value = elapsedSeconds;
   }
 
   updateAudio(audio: AudioFrame): void {
-    const materials = [this.baseMaterial, this.peelMaterial];
-    for (const material of materials) {
-      const u = material.uniforms;
-      u.uAudioLevel.value = audio.level;
-      u.uAudioBass.value = audio.bass;
-      u.uAudioMid.value = audio.mid;
-      u.uAudioHigh.value = audio.high;
-    }
+    const u = this.baseMaterial.uniforms;
+    u.uAudioLevel.value = audio.level;
+    u.uAudioBass.value = audio.bass;
+    u.uAudioMid.value = audio.mid;
+    u.uAudioHigh.value = audio.high;
   }
 
   updateViewport(width: number, height: number): void {
@@ -382,17 +196,8 @@ export class ParticleCloud {
     baseUniforms.uDepthStrength.value = tuning.depthStrength;
     baseUniforms.uMouseStrength.value = tuning.mouseStrength;
     baseUniforms.uColorTint.value = tuning.colorTint;
-
-    const peelUniforms = this.peelMaterial.uniforms;
-    peelUniforms.uParticleSize.value = tuning.particleSize;
-    peelUniforms.uContrast.value = tuning.contrast;
-    peelUniforms.uFlowSpeed.value = tuning.flowSpeed;
-    peelUniforms.uFlowAmplitude.value = tuning.flowAmplitude;
-    peelUniforms.uEdgeLooseness.value = tuning.edgeLooseness;
-    peelUniforms.uDepthStrength.value = tuning.depthStrength;
-    peelUniforms.uMouseStrength.value = tuning.mouseStrength;
-    peelUniforms.uColorTint.value = tuning.colorTint;
-    peelUniforms.uAlphaGain.value = tuning.alphaGain;
+    baseUniforms.uEdgeLooseness.value = tuning.edgeLooseness;
+    baseUniforms.uAlphaGain.value = tuning.alphaGain;
   }
 
   renderBaseAccumulation(renderer: WebGLRenderer, camera: Camera): void {
@@ -420,9 +225,7 @@ export class ParticleCloud {
 
   dispose(): void {
     this.baseGeometry.dispose();
-    this.peelGeometry.dispose();
     this.baseMaterial.dispose();
-    this.peelMaterial.dispose();
     disposeRenderTarget(this.accumulationTarget);
   }
 }
